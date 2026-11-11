@@ -18,6 +18,11 @@ services:
     build: .
     environment:
       DATABASE_URL: postgres://ledger:ledger@db:5432/ledger?sslmode=disable
+      REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-10s}
+      DB_LOCK_TIMEOUT: ${DB_LOCK_TIMEOUT:-2s}
+      DB_STATEMENT_TIMEOUT: ${DB_STATEMENT_TIMEOUT:-5s}
+      DB_IDLE_TX_TIMEOUT: ${DB_IDLE_TX_TIMEOUT:-5s}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

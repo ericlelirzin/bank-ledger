@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -14,7 +15,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func testStore(t *testing.T) *Store {
+func testStore(t testing.TB, configure ...func(*pgxpool.Config)) *Store {
+	return testStoreAtVersion(t, 2, configure...)
+}
+func testStoreAtVersion(t testing.TB, version int, configure ...func(*pgxpool.Config)) *Store {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
@@ -30,33 +34,48 @@ func testStore(t *testing.T) *Store {
 		admin.Close()
 		t.Fatal(e)
 	}
+	t.Cleanup(func() {
+		_, err := admin.Exec(context.Background(), `DROP SCHEMA `+schema+` CASCADE`)
+		admin.Close()
+		if err != nil {
+			t.Error(err)
+		}
+	})
 	cfg, e := pgxpool.ParseConfig(url)
 	if e != nil {
 		t.Fatal(e)
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	cfg.ConnConfig.RuntimeParams["application_name"] = schema
 	cfg.MaxConns = 24
+	for _, edit := range configure {
+		edit(cfg)
+	}
 	db, e := pgxpool.NewWithConfig(ctx, cfg)
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() {
-		db.Close()
-		_, e := admin.Exec(ctx, `DROP SCHEMA `+schema+` CASCADE`)
-		admin.Close()
-		if e != nil {
-			t.Error(e)
+	t.Cleanup(db.Close)
+	if version == 1 {
+		sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", "001_ledger.sql"))
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
-	if e = migrations.Apply(ctx, db); e != nil {
-		t.Fatal(e)
+		if _, err = db.Exec(ctx, string(sql)+`; CREATE TABLE schema_migrations(version integer PRIMARY KEY);INSERT INTO schema_migrations VALUES(1);`); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if e = migrations.Apply(ctx, db); e != nil {
+			t.Fatal(e)
+		}
+		if e = migrations.Apply(ctx, db); e != nil {
+			t.Fatal(e)
+		}
 	}
-	if e = migrations.Apply(ctx, db); e != nil {
-		t.Fatal(e)
-	}
+
 	return &Store{DB: db}
 }
-func setupAccounts(t *testing.T, s *Store) (Account, Account, Account) {
+func setupAccounts(t testing.TB, s *Store) (Account, Account, Account) {
 	t.Helper()
 	ctx := context.Background()
 	create := func(code, side string, overdraft bool) Account {
@@ -270,7 +289,7 @@ func TestPostgresOverflowAndJournalReplay(t *testing.T) {
 	s := testStore(t)
 	a, b, f := setupAccounts(t, s)
 	ctx := context.Background()
-	p := Posting{Key: "max", Entries: []Entry{{f.ID, "credit", 9223372036854775807}, {b.ID, "debit", 9223372036854775807}}}
+	p := Posting{Key: "max", Entries: []Entry{{b.ID, "debit", 9223372036854775807}, {f.ID, "credit", 9223372036854775807}}}
 	// Funding would overflow; changes to the other account must roll back too.
 	if _, e := s.Post(ctx, p); e == nil {
 		t.Fatal("overflow accepted")
@@ -278,6 +297,14 @@ func TestPostgresOverflowAndJournalReplay(t *testing.T) {
 	bb, e := s.Account(ctx, b.ID)
 	if e != nil || bb.Balance != 0 {
 		t.Fatalf("overflow rollback: %+v %v", bb, e)
+	}
+	var count int
+	if e = s.DB.QueryRow(ctx, `SELECT count(*) FROM journals WHERE idempotency_key='max'`).Scan(&count); e != nil || count != 0 {
+		t.Fatalf("overflow left journal: %d %v", count, e)
+	}
+	p.Entries = []Entry{{b.ID, "debit", 1}, {f.ID, "credit", 1}}
+	if _, e = s.Post(ctx, p); e != nil {
+		t.Fatalf("overflow key not reusable: %v", e)
 	}
 	p.Key = "reorder"
 	p.Entries = []Entry{{a.ID, "credit", 5}, {b.ID, "debit", 5}}

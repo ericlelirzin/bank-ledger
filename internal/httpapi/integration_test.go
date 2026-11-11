@@ -50,7 +50,7 @@ func TestPostgresHTTPFlow(t *testing.T) {
 	if err = migrations.Apply(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	handler := Handler(&ledger.Store{DB: db})
+	handler := Handler(&ledger.Store{DB: db}, 10*time.Second)
 	request := func(method, path, body string, status int) []byte {
 		t.Helper()
 		w := httptest.NewRecorder()

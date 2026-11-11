@@ -128,7 +128,11 @@ func (s *Store) post(ctx context.Context, p Posting, t *Transfer) (res Result, e
 	if err != nil {
 		return res, err
 	}
-	defer tx.Rollback(context.Background())
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = tx.Rollback(cleanup)
+	}()
 	var payload []byte
 	if t != nil {
 		payload, _ = json.Marshal(struct {

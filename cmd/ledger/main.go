@@ -4,14 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"bank-ledger/internal/httpapi"
-	"bank-ledger/internal/ledger"
 	"bank-ledger/migrations"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,11 +31,19 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	db, e := pgxpool.New(ctx, databaseURL)
+	c, e := loadConfig()
 	if e != nil {
 		return e
 	}
-	defer db.Close()
+	pc, e := poolConfig(databaseURL, c)
+	if e != nil {
+		return e
+	}
+	db, e := pgxpool.NewWithConfig(ctx, pc)
+	if e != nil {
+		return e
+	}
+	defer closePool(db, c.Shutdown/2)
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if e = migrations.Apply(startup, db); e != nil {
@@ -50,18 +56,10 @@ func run() error {
 	if addr == "" {
 		addr = ":8080"
 	}
-	server := &http.Server{Addr: addr, Handler: httpapi.Handler(&ledger.Store{DB: db}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
-	done := make(chan error, 1)
-	go func() { slog.Info("listening", "address", addr); done <- server.ListenAndServe() }()
-	select {
-	case e = <-done:
-		if e == http.ErrServerClosed {
-			return nil
-		}
+	listener, e := net.Listen("tcp", addr)
+	if e != nil {
 		return e
-	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return server.Shutdown(shutdown)
 	}
+	slog.Info("listening", "address", addr)
+	return serve(ctx, listener, db, c)
 }
