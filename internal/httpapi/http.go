@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode"
 
+	"bank-ledger/internal/banking"
 	"bank-ledger/internal/ledger"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -21,6 +22,7 @@ import (
 
 func Handler(s *ledger.Store, requestTimeout time.Duration) http.Handler {
 	mux := http.NewServeMux()
+	bankRoutes(mux, &banking.Store{DB: s.DB})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if e := s.DB.Ping(r.Context()); e != nil {
 			respond(w, nil, e)

@@ -379,7 +379,7 @@ func TestPostgresUpgradeFromV1(t *testing.T) {
 		t.Fatal(e)
 	}
 	var version int
-	if e = s.DB.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); e != nil || version != 2 {
+	if e = s.DB.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); e != nil || version != 4 {
 		t.Fatal(version, e)
 	}
 }

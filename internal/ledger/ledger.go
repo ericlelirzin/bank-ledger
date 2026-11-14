@@ -123,7 +123,6 @@ func (s *Store) Transfer(ctx context.Context, t Transfer) (Result, error) {
 	return s.post(ctx, p, &t)
 }
 func (s *Store) post(ctx context.Context, p Posting, t *Transfer) (res Result, err error) {
-	p.Entries = append([]Entry(nil), p.Entries...)
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
 		return res, err
@@ -133,6 +132,24 @@ func (s *Store) post(ctx context.Context, p Posting, t *Transfer) (res Result, e
 		defer cancel()
 		_ = tx.Rollback(cleanup)
 	}()
+	res, err = postTx(ctx, tx, p, t)
+	if err != nil {
+		return Result{}, err
+	}
+	return res, tx.Commit(ctx)
+}
+
+// PostTx posts within a caller-owned transaction. The caller must roll back on
+// any error and commit before reporting success; deferred checks run at commit.
+func PostTx(ctx context.Context, tx pgx.Tx, p Posting) (Result, error) {
+	if err := Validate(p); err != nil {
+		return Result{}, err
+	}
+	return postTx(ctx, tx, p, nil)
+}
+
+func postTx(ctx context.Context, tx pgx.Tx, p Posting, t *Transfer) (res Result, err error) {
+	p.Entries = append([]Entry(nil), p.Entries...)
 	var payload []byte
 	if t != nil {
 		payload, _ = json.Marshal(struct {
@@ -157,7 +174,7 @@ func (s *Store) post(ctx context.Context, p Posting, t *Transfer) (res Result, e
 			return Result{}, ErrConflict
 		}
 		res.Replayed = true
-		return res, tx.Commit(ctx)
+		return res, nil
 	}
 	if err != nil {
 		return res, err
@@ -209,8 +226,7 @@ func (s *Store) post(ctx context.Context, p Posting, t *Transfer) (res Result, e
 			return Result{}, err
 		}
 	}
-	err = tx.Commit(ctx)
-	return res, err
+	return res, nil
 }
 
 // Journal is a committed posting and its immutable entry lines.
