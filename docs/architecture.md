@@ -29,6 +29,8 @@ Amounts are positive `bigint`; balances are signed `bigint`. Database arithmetic
 
 ## Posting protocol
 
+Read `internal/ledger/ledger.go` for the public `Post` and `Transfer` entry points, then `internal/ledger/posting.go` for the transaction. The `post` function keeps begin, replay, entry insertion, and commit visible; `requestHash`, `claimJournal`, and `lockAccounts` name the request identity, duplicate arbitration, and lock ordering steps. Balance updates and final validation live in the SQL migrations, not in a second Go balance calculation.
+
 1. Validate the request, including positive amounts, valid sides, entry count, and balanced arbitrary-precision totals in Go. Copy the entries so posting never mutates a caller's request.
 2. Begin a PostgreSQL transaction at the default `READ COMMITTED` isolation level.
 3. Insert a journal with its unique idempotency key and a hash of a typed, operation-tagged JSON representation. PostgreSQL's unique index waits for concurrent attempts using that key. If the committed key already exists, compare hashes and return its journal ID, or reject a conflicting payload. A concurrent failed attempt releases the key through rollback.

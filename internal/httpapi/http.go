@@ -28,7 +28,10 @@ func Handler(s *ledger.Store, requestTimeout time.Duration) http.Handler {
 		}
 		respond(w, map[string]string{"status": "ok"}, nil)
 	})
-	mux.HandleFunc("GET /accounts", func(w http.ResponseWriter, r *http.Request) { v, e := s.Accounts(r.Context()); respond(w, v, e) })
+	mux.HandleFunc("GET /accounts", func(w http.ResponseWriter, r *http.Request) {
+		accounts, err := s.Accounts(r.Context())
+		respond(w, accounts, err)
+	})
 	mux.HandleFunc("POST /accounts", func(w http.ResponseWriter, r *http.Request) {
 		var a ledger.Account
 		if !decode(w, r, &a) {

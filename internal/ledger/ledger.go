@@ -3,12 +3,8 @@ package ledger
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"math/big"
-	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -121,96 +117,6 @@ func (s *Store) Transfer(ctx context.Context, t Transfer) (Result, error) {
 	}
 	p := Posting{Key: t.Key, Description: "internal transfer", Entries: []Entry{{AccountID: t.From, Amount: t.Amount}, {AccountID: t.To, Amount: t.Amount}}}
 	return s.post(ctx, p, &t)
-}
-func (s *Store) post(ctx context.Context, p Posting, t *Transfer) (res Result, err error) {
-	p.Entries = append([]Entry(nil), p.Entries...)
-	tx, err := s.DB.Begin(ctx)
-	if err != nil {
-		return res, err
-	}
-	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = tx.Rollback(cleanup)
-	}()
-	var payload []byte
-	if t != nil {
-		payload, _ = json.Marshal(struct {
-			Type     string
-			Transfer Transfer
-		}{"transfer", *t})
-	} else {
-		payload, _ = json.Marshal(struct {
-			Type    string
-			Posting Posting
-		}{"journal", p})
-	}
-	hash := sha256.Sum256(payload)
-	err = tx.QueryRow(ctx, `INSERT INTO journals(idempotency_key,request_hash,description) VALUES($1,$2,$3) ON CONFLICT(idempotency_key) DO NOTHING RETURNING id`, p.Key, hash[:], p.Description).Scan(&res.ID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		var old []byte
-		err = tx.QueryRow(ctx, `SELECT id,request_hash FROM journals WHERE idempotency_key=$1`, p.Key).Scan(&res.ID, &old)
-		if err != nil {
-			return res, err
-		}
-		if string(old) != string(hash[:]) {
-			return Result{}, ErrConflict
-		}
-		res.Replayed = true
-		return res, tx.Commit(ctx)
-	}
-	if err != nil {
-		return res, err
-	}
-	ids := []int64{}
-	seen := map[int64]bool{}
-	for _, e := range p.Entries {
-		if !seen[e.AccountID] {
-			ids = append(ids, e.AccountID)
-			seen[e.AccountID] = true
-		}
-	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	accounts := map[int64]Account{}
-	currency := ""
-	for _, id := range ids {
-		a, e := scanAccount(tx.QueryRow(ctx, `SELECT `+accountColumns+` FROM accounts WHERE id=$1 FOR UPDATE`, id))
-		if errors.Is(e, pgx.ErrNoRows) {
-			return res, ErrNotFound
-		}
-		if e != nil {
-			return res, e
-		}
-		if currency != "" && currency != a.Currency {
-			return res, ErrInvalid
-		}
-		currency = a.Currency
-		accounts[id] = a
-	}
-	if t != nil {
-		a, b := accounts[t.From], accounts[t.To]
-		if a.NormalSide != b.NormalSide {
-			return res, fmt.Errorf("%w: transfer accounts need the same normal side", ErrInvalid)
-		}
-		p.Entries[0].Side = "credit"
-		if a.NormalSide == "credit" {
-			p.Entries[0].Side = "debit"
-		}
-		p.Entries[1].Side = b.NormalSide
-	}
-	// Apply increases first to avoid transient overdrafts. PostgreSQL rejects
-	// any intermediate balance outside the int64 range.
-	sort.SliceStable(p.Entries, func(i, j int) bool {
-		return p.Entries[i].Side == accounts[p.Entries[i].AccountID].NormalSide && p.Entries[j].Side != accounts[p.Entries[j].AccountID].NormalSide
-	})
-	for i, e := range p.Entries {
-		_, err = tx.Exec(ctx, `INSERT INTO entries(journal_id,line,account_id,side,amount) VALUES($1,$2,$3,$4,$5)`, res.ID, i+1, e.AccountID, e.Side, e.Amount)
-		if err != nil {
-			return Result{}, err
-		}
-	}
-	err = tx.Commit(ctx)
-	return res, err
 }
 
 // Journal is a committed posting and its immutable entry lines.

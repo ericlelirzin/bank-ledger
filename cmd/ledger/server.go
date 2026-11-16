@@ -16,7 +16,14 @@ import (
 func serve(ctx context.Context, listener net.Listener, db *pgxpool.Pool, c config) error {
 	requests, cancelRequests := context.WithCancel(context.Background())
 	defer cancelRequests()
-	server := &http.Server{Handler: httpapi.Handler(&ledger.Store{DB: db}, c.Request), BaseContext: func(net.Listener) context.Context { return requests }, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: c.Request, WriteTimeout: c.Request + 2*time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{
+		Handler:           httpapi.Handler(&ledger.Store{DB: db}, c.Request),
+		BaseContext:       func(net.Listener) context.Context { return requests },
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       c.Request,
+		WriteTimeout:      c.Request + 2*time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	select {
