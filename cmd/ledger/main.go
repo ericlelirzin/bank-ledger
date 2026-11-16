@@ -16,8 +16,8 @@ import (
 )
 
 func main() {
-	if e := run(); e != nil {
-		slog.Error("ledger stopped", "error", e)
+	if err := run(); err != nil {
+		slog.Error("ledger stopped", "error", err)
 		os.Exit(1)
 	}
 }
@@ -29,37 +29,37 @@ func run() error {
 	if databaseURL == "" {
 		return fmt.Errorf("DATABASE_URL is required")
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	c, e := loadConfig()
-	if e != nil {
-		return e
+	applicationContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	settings, err := loadConfig()
+	if err != nil {
+		return err
 	}
-	pc, e := poolConfig(databaseURL, c)
-	if e != nil {
-		return e
+	databaseConfig, err := poolConfig(databaseURL, settings)
+	if err != nil {
+		return err
 	}
-	db, e := pgxpool.NewWithConfig(ctx, pc)
-	if e != nil {
-		return e
+	databasePool, err := pgxpool.NewWithConfig(applicationContext, databaseConfig)
+	if err != nil {
+		return err
 	}
-	defer closePool(db, c.Shutdown/2)
-	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if e = migrations.Apply(startup, db); e != nil {
-		return e
+	defer closePool(databasePool, settings.Shutdown/2)
+	startupContext, cancelStartup := context.WithTimeout(applicationContext, 30*time.Second)
+	defer cancelStartup()
+	if err = migrations.Apply(startupContext, databasePool); err != nil {
+		return err
 	}
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		return nil
 	}
-	addr := os.Getenv("HTTP_ADDR")
-	if addr == "" {
-		addr = ":8080"
+	listenAddress := os.Getenv("HTTP_ADDR")
+	if listenAddress == "" {
+		listenAddress = ":8080"
 	}
-	listener, e := net.Listen("tcp", addr)
-	if e != nil {
-		return e
+	listener, err := net.Listen("tcp", listenAddress)
+	if err != nil {
+		return err
 	}
-	slog.Info("listening", "address", addr)
-	return serve(ctx, listener, db, c)
+	slog.Info("listening", "address", listenAddress)
+	return serve(applicationContext, listener, databasePool, settings)
 }

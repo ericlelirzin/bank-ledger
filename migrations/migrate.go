@@ -15,38 +15,38 @@ var initial string
 //go:embed 002_reliability.sql
 var reliability string
 
-func Apply(ctx context.Context, db *pgxpool.Pool) error {
-	tx, e := db.Begin(ctx)
-	if e != nil {
-		return e
+func Apply(migrationContext context.Context, databasePool *pgxpool.Pool) error {
+	transaction, err := databasePool.Begin(migrationContext)
+	if err != nil {
+		return err
 	}
 	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = tx.Rollback(cleanup)
+		cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancelCleanup()
+		_ = transaction.Rollback(cleanupContext)
 	}()
-	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(74209183)`); e != nil {
-		return e
+	if _, err = transaction.Exec(migrationContext, `SELECT pg_advisory_xact_lock(74209183)`); err != nil {
+		return err
 	}
-	if _, e = tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations(version integer PRIMARY KEY)`); e != nil {
-		return e
+	if _, err = transaction.Exec(migrationContext, `CREATE TABLE IF NOT EXISTS schema_migrations(version integer PRIMARY KEY)`); err != nil {
+		return err
 	}
-	for i, sql := range []string{initial, reliability} {
-		version := i + 1
-		var exists bool
-		if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, version).Scan(&exists); e != nil {
-			return e
+	for migrationIndex, migrationSQL := range []string{initial, reliability} {
+		version := migrationIndex + 1
+		var alreadyApplied bool
+		if err = transaction.QueryRow(migrationContext, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, version).Scan(&alreadyApplied); err != nil {
+			return err
 		}
-		if exists {
+		if alreadyApplied {
 			continue
 		}
-		if _, e = tx.Exec(ctx, sql); e != nil {
-			return e
+		if _, err = transaction.Exec(migrationContext, migrationSQL); err != nil {
+			return err
 		}
-		if _, e = tx.Exec(ctx, `INSERT INTO schema_migrations VALUES($1)`, version); e != nil {
-			return e
+		if _, err = transaction.Exec(migrationContext, `INSERT INTO schema_migrations VALUES($1)`, version); err != nil {
+			return err
 		}
 	}
 
-	return tx.Commit(ctx)
+	return transaction.Commit(migrationContext)
 }

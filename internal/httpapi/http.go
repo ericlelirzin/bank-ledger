@@ -19,88 +19,88 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func Handler(s *ledger.Store, requestTimeout time.Duration) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if e := s.DB.Ping(r.Context()); e != nil {
-			respond(w, nil, e)
+func Handler(store *ledger.Store, requestTimeout time.Duration) http.Handler {
+	router := http.NewServeMux()
+	router.HandleFunc("GET /healthz", func(responseWriter http.ResponseWriter, request *http.Request) {
+		if err := store.DB.Ping(request.Context()); err != nil {
+			respond(responseWriter, nil, err)
 			return
 		}
-		respond(w, map[string]string{"status": "ok"}, nil)
+		respond(responseWriter, map[string]string{"status": "ok"}, nil)
 	})
-	mux.HandleFunc("GET /accounts", func(w http.ResponseWriter, r *http.Request) {
-		accounts, err := s.Accounts(r.Context())
-		respond(w, accounts, err)
+	router.HandleFunc("GET /accounts", func(responseWriter http.ResponseWriter, request *http.Request) {
+		accounts, err := store.Accounts(request.Context())
+		respond(responseWriter, accounts, err)
 	})
-	mux.HandleFunc("POST /accounts", func(w http.ResponseWriter, r *http.Request) {
-		var a ledger.Account
-		if !decode(w, r, &a) {
+	router.HandleFunc("POST /accounts", func(responseWriter http.ResponseWriter, request *http.Request) {
+		var account ledger.Account
+		if !decode(responseWriter, request, &account) {
 			return
 		}
-		v, e := s.CreateAccount(r.Context(), a)
-		respond(w, v, e)
+		result, err := store.CreateAccount(request.Context(), account)
+		respond(responseWriter, result, err)
 	})
-	mux.HandleFunc("GET /accounts/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id, e := strconv.ParseInt(r.PathValue("id"), 10, 64)
-		if e != nil || id <= 0 {
-			respond(w, nil, ledger.ErrInvalid)
+	router.HandleFunc("GET /accounts/{id}", func(responseWriter http.ResponseWriter, request *http.Request) {
+		accountID, err := strconv.ParseInt(request.PathValue("id"), 10, 64)
+		if err != nil || accountID <= 0 {
+			respond(responseWriter, nil, ledger.ErrInvalid)
 			return
 		}
-		v, e := s.Account(r.Context(), id)
-		respond(w, v, e)
+		account, err := store.Account(request.Context(), accountID)
+		respond(responseWriter, account, err)
 	})
-	mux.HandleFunc("GET /journals/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id, e := strconv.ParseInt(r.PathValue("id"), 10, 64)
-		if e != nil || id <= 0 {
-			respond(w, nil, ledger.ErrInvalid)
+	router.HandleFunc("GET /journals/{id}", func(responseWriter http.ResponseWriter, request *http.Request) {
+		journalID, err := strconv.ParseInt(request.PathValue("id"), 10, 64)
+		if err != nil || journalID <= 0 {
+			respond(responseWriter, nil, ledger.ErrInvalid)
 			return
 		}
-		v, e := s.Journal(r.Context(), id)
-		respond(w, v, e)
+		journal, err := store.Journal(request.Context(), journalID)
+		respond(responseWriter, journal, err)
 	})
-	mux.HandleFunc("POST /journals", func(w http.ResponseWriter, r *http.Request) {
-		var p ledger.Posting
-		if !decode(w, r, &p) {
+	router.HandleFunc("POST /journals", func(responseWriter http.ResponseWriter, request *http.Request) {
+		var posting ledger.Posting
+		if !decode(responseWriter, request, &posting) {
 			return
 		}
-		v, e := s.Post(r.Context(), p)
-		respond(w, v, e)
+		result, err := store.Post(request.Context(), posting)
+		respond(responseWriter, result, err)
 	})
-	mux.HandleFunc("POST /transfers", func(w http.ResponseWriter, r *http.Request) {
-		var t ledger.Transfer
-		if !decode(w, r, &t) {
+	router.HandleFunc("POST /transfers", func(responseWriter http.ResponseWriter, request *http.Request) {
+		var transfer ledger.Transfer
+		if !decode(responseWriter, request, &transfer) {
 			return
 		}
-		v, e := s.Transfer(r.Context(), t)
-		respond(w, v, e)
+		result, err := store.Transfer(request.Context(), transfer)
+		respond(responseWriter, result, err)
 	})
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
-		defer cancel()
-		mux.ServeHTTP(w, r.WithContext(ctx))
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		requestContext, cancelRequest := context.WithTimeout(request.Context(), requestTimeout)
+		defer cancelRequest()
+		router.ServeHTTP(responseWriter, request.WithContext(requestContext))
 	})
 }
-func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	body, err := io.ReadAll(r.Body)
+func decode(responseWriter http.ResponseWriter, request *http.Request, destination any) bool {
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, 1<<20)
+	body, err := io.ReadAll(request.Body)
 	if err != nil {
-		respond(w, nil, ledger.ErrInvalid)
+		respond(responseWriter, nil, ledger.ErrInvalid)
 		return false
 	}
-	keys := json.NewDecoder(bytes.NewReader(body))
-	keys.UseNumber()
-	if err = uniqueKeys(keys, 0); err != nil {
-		respond(w, nil, ledger.ErrInvalid)
+	keyDecoder := json.NewDecoder(bytes.NewReader(body))
+	keyDecoder.UseNumber()
+	if err = uniqueKeys(keyDecoder, 0); err != nil {
+		respond(responseWriter, nil, ledger.ErrInvalid)
 		return false
 	}
-	if _, err = keys.Token(); err != io.EOF {
-		respond(w, nil, ledger.ErrInvalid)
+	if _, err = keyDecoder.Token(); err != io.EOF {
+		respond(responseWriter, nil, ledger.ErrInvalid)
 		return false
 	}
-	d := json.NewDecoder(bytes.NewReader(body))
-	d.DisallowUnknownFields()
-	if err = d.Decode(v); err != nil {
-		respond(w, nil, ledger.ErrInvalid)
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(destination); err != nil {
+		respond(responseWriter, nil, ledger.ErrInvalid)
 		return false
 	}
 
@@ -109,12 +109,12 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 
 // Walk tokens before typed decoding. Fold case as encoding/json also matches
 // struct fields case-insensitively; escaped spellings decode to the same key.
-func uniqueKeys(d *json.Decoder, depth int) error {
-	token, err := d.Token()
+func uniqueKeys(decoder *json.Decoder, depth int) error {
+	token, err := decoder.Token()
 	if err != nil {
 		return err
 	}
-	delim, ok := token.(json.Delim)
+	delimiter, ok := token.(json.Delim)
 	if !ok {
 		return nil
 	}
@@ -123,92 +123,92 @@ func uniqueKeys(d *json.Decoder, depth int) error {
 	if depth >= 10000 {
 		return fmt.Errorf("JSON nesting limit exceeded")
 	}
-	switch delim {
+	switch delimiter {
 	case '{':
-		seen := map[string]bool{}
-		for d.More() {
-			key, err := d.Token()
+		seenKeys := map[string]bool{}
+		for decoder.More() {
+			key, err := decoder.Token()
 			if err != nil {
 				return err
 			}
-			name, ok := key.(string)
+			keyName, ok := key.(string)
 			if !ok {
 				return fmt.Errorf("invalid key")
 			}
-			name = strings.Map(func(r rune) rune {
+			keyName = strings.Map(func(character rune) rune {
 				for {
-					next := unicode.SimpleFold(r)
-					if next <= r {
-						return next
+					foldedCharacter := unicode.SimpleFold(character)
+					if foldedCharacter <= character {
+						return foldedCharacter
 					}
-					r = next
+					character = foldedCharacter
 				}
-			}, name)
-			if seen[name] {
+			}, keyName)
+			if seenKeys[keyName] {
 				return fmt.Errorf("duplicate key")
 			}
-			seen[name] = true
-			if err = uniqueKeys(d, depth+1); err != nil {
+			seenKeys[keyName] = true
+			if err = uniqueKeys(decoder, depth+1); err != nil {
 				return err
 			}
 		}
 	case '[':
-		for d.More() {
-			if err = uniqueKeys(d, depth+1); err != nil {
+		for decoder.More() {
+			if err = uniqueKeys(decoder, depth+1); err != nil {
 				return err
 			}
 		}
 	default:
 		return fmt.Errorf("unexpected delimiter")
 	}
-	_, err = d.Token()
+	_, err = decoder.Token()
 	return err
 }
 
-func respond(w http.ResponseWriter, v any, err error) {
-	w.Header().Set("Content-Type", "application/json")
-	status := http.StatusOK
+func respond(responseWriter http.ResponseWriter, responseBody any, err error) {
+	responseWriter.Header().Set("Content-Type", "application/json")
+	statusCode := http.StatusOK
 	if err != nil {
-		status = 500
-		message := "internal error"
-		var pg *pgconn.PgError
+		statusCode = 500
+		errorMessage := "internal error"
+		var databaseError *pgconn.PgError
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):
-			status = 504
-			message = "request deadline exceeded; posting outcome may be unknown; retry the identical request with the same idempotency key"
+			statusCode = 504
+			errorMessage = "request deadline exceeded; posting outcome may be unknown; retry the identical request with the same idempotency key"
 		case errors.Is(err, context.Canceled):
-			status = 503
-			message = "request cancelled; posting outcome may be unknown; retry the identical request with the same idempotency key"
+			statusCode = 503
+			errorMessage = "request cancelled; posting outcome may be unknown; retry the identical request with the same idempotency key"
 		case errors.Is(err, ledger.ErrInvalid):
-			status = 400
-			message = err.Error()
+			statusCode = 400
+			errorMessage = err.Error()
 		case errors.Is(err, ledger.ErrNotFound):
-			status = 404
-			message = err.Error()
+			statusCode = 404
+			errorMessage = err.Error()
 		case errors.Is(err, ledger.ErrConflict):
-			status = 409
-			message = err.Error()
-		case errors.As(err, &pg):
-			switch pg.Code {
+			statusCode = 409
+			errorMessage = err.Error()
+		case errors.As(err, &databaseError):
+			switch databaseError.Code {
 			case "23505":
-				status = 409
-				message = "account code already exists"
+				statusCode = 409
+				errorMessage = "account code already exists"
 			case "23514", "22003":
-				status = 422
-				message = "posting violates account policy, balance bounds, or journal constraints"
+				statusCode = 422
+				errorMessage = "posting violates account policy, balance bounds, or journal constraints"
 			case "23502", "22001", "22P02":
-				status = 400
-				message = "invalid account or posting"
+				statusCode = 400
+				errorMessage = "invalid account or posting"
 			case "40P01", "40001", "55P03", "57014", "25P03":
-				status = 503
-				message = "transaction aborted; retry with the same idempotency key"
+				statusCode = 503
+				errorMessage = "transaction aborted; retry with the same idempotency key"
 			}
 		}
-		if status == 500 {
+		if statusCode == 500 {
 			slog.Error("request failed", "error", err)
 		}
-		v = map[string]string{"error": message}
+		responseBody = map[string]string{"error": errorMessage}
 	}
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	responseWriter.WriteHeader(statusCode)
+	_ = json.NewEncoder(responseWriter).Encode(responseBody)
 }

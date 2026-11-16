@@ -17,7 +17,12 @@ var (
 	ErrNotFound = errors.New("resource not found")
 )
 
-type Store struct{ DB *pgxpool.Pool }
+type Store struct {
+	// DB is the shared PostgreSQL connection pool. Each posting uses a transaction
+	// acquired from this pool to keep its database operations together.
+	DB *pgxpool.Pool
+}
+
 type Account struct {
 	ID             int64  `json:"id"`
 	Code           string `json:"code"`
@@ -51,72 +56,96 @@ type Result struct {
 
 const accountColumns = `id,code,name,kind,currency,normal_side,allow_overdraft,balance`
 
-func scanAccount(row pgx.Row) (a Account, err error) {
-	err = row.Scan(&a.ID, &a.Code, &a.Name, &a.Kind, &a.Currency, &a.NormalSide, &a.AllowOverdraft, &a.Balance)
-	return
+func scanAccount(row pgx.Row) (Account, error) {
+	var account Account
+	// Scan destinations follow the SQL column order in accountColumns.
+	err := row.Scan(
+		&account.ID, &account.Code, &account.Name, &account.Kind,
+		&account.Currency, &account.NormalSide, &account.AllowOverdraft, &account.Balance,
+	)
+	return account, err
 }
-func (s *Store) CreateAccount(ctx context.Context, a Account) (Account, error) {
-	if a.Balance != 0 || a.ID != 0 {
+
+func (store *Store) CreateAccount(requestContext context.Context, account Account) (Account, error) {
+	if account.Balance != 0 || account.ID != 0 {
 		return Account{}, ErrInvalid
 	}
-	return scanAccount(s.DB.QueryRow(ctx, `INSERT INTO accounts(code,name,kind,currency,normal_side,allow_overdraft) VALUES($1,$2,$3,$4,$5,$6) RETURNING `+accountColumns, a.Code, a.Name, a.Kind, a.Currency, a.NormalSide, a.AllowOverdraft))
+	return scanAccount(store.DB.QueryRow(requestContext, `
+		INSERT INTO accounts(code,name,kind,currency,normal_side,allow_overdraft)
+		VALUES($1,$2,$3,$4,$5,$6)
+		RETURNING `+accountColumns,
+		account.Code, account.Name, account.Kind,
+		account.Currency, account.NormalSide, account.AllowOverdraft,
+	))
 }
-func (s *Store) Account(ctx context.Context, id int64) (Account, error) {
-	a, e := scanAccount(s.DB.QueryRow(ctx, `SELECT `+accountColumns+` FROM accounts WHERE id=$1`, id))
-	if errors.Is(e, pgx.ErrNoRows) {
-		e = ErrNotFound
+
+func (store *Store) Account(requestContext context.Context, accountID int64) (Account, error) {
+	account, err := scanAccount(store.DB.QueryRow(requestContext, `SELECT `+accountColumns+` FROM accounts WHERE id=$1`, accountID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = ErrNotFound
 	}
-	return a, e
+	return account, err
 }
-func (s *Store) Accounts(ctx context.Context) ([]Account, error) {
-	rows, e := s.DB.Query(ctx, `SELECT `+accountColumns+` FROM accounts ORDER BY id`)
-	if e != nil {
-		return nil, e
+
+func (store *Store) Accounts(requestContext context.Context) ([]Account, error) {
+	rows, err := store.DB.Query(requestContext, `SELECT `+accountColumns+` FROM accounts ORDER BY id`)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
-	out := []Account{}
+	accounts := []Account{}
 	for rows.Next() {
-		a, e := scanAccount(rows)
-		if e != nil {
-			return nil, e
+		account, err := scanAccount(rows)
+		if err != nil {
+			return nil, err
 		}
-		out = append(out, a)
+		accounts = append(accounts, account)
 	}
-	return out, rows.Err()
+	return accounts, rows.Err()
 }
-func Validate(p Posting) error {
-	if len(p.Key) == 0 || len(p.Key) > 200 || len(p.Description) > 1000 || len(p.Entries) < 2 || len(p.Entries) > 1000 {
+
+func Validate(posting Posting) error {
+	if len(posting.Key) == 0 || len(posting.Key) > 200 || len(posting.Description) > 1000 || len(posting.Entries) < 2 || len(posting.Entries) > 1000 {
 		return ErrInvalid
 	}
 	// Sum using arbitrary precision; individual amounts remain signed 64-bit integers.
-	debit, credit := new(big.Int), new(big.Int)
-	for _, e := range p.Entries {
-		if e.AccountID <= 0 || e.Amount <= 0 || (e.Side != "debit" && e.Side != "credit") {
+	debitTotal, creditTotal := new(big.Int), new(big.Int)
+	for _, entry := range posting.Entries {
+		if entry.AccountID <= 0 || entry.Amount <= 0 || (entry.Side != "debit" && entry.Side != "credit") {
 			return ErrInvalid
 		}
-		if e.Side == "debit" {
-			debit.Add(debit, big.NewInt(e.Amount))
+		if entry.Side == "debit" {
+			debitTotal.Add(debitTotal, big.NewInt(entry.Amount))
 		} else {
-			credit.Add(credit, big.NewInt(e.Amount))
+			creditTotal.Add(creditTotal, big.NewInt(entry.Amount))
 		}
 	}
-	if debit.Cmp(credit) != 0 {
+	if debitTotal.Cmp(creditTotal) != 0 {
 		return ErrInvalid
 	}
 	return nil
 }
-func (s *Store) Post(ctx context.Context, p Posting) (Result, error) {
-	if e := Validate(p); e != nil {
-		return Result{}, e
+
+func (store *Store) Post(requestContext context.Context, posting Posting) (Result, error) {
+	if err := Validate(posting); err != nil {
+		return Result{}, err
 	}
-	return s.post(ctx, p, nil)
+	return store.post(requestContext, posting, nil)
 }
-func (s *Store) Transfer(ctx context.Context, t Transfer) (Result, error) {
-	if t.From <= 0 || t.To <= 0 || t.From == t.To || t.Amount <= 0 || len(t.Key) == 0 || len(t.Key) > 200 {
+
+func (store *Store) Transfer(requestContext context.Context, transfer Transfer) (Result, error) {
+	if transfer.From <= 0 || transfer.To <= 0 || transfer.From == transfer.To || transfer.Amount <= 0 || len(transfer.Key) == 0 || len(transfer.Key) > 200 {
 		return Result{}, ErrInvalid
 	}
-	p := Posting{Key: t.Key, Description: "internal transfer", Entries: []Entry{{AccountID: t.From, Amount: t.Amount}, {AccountID: t.To, Amount: t.Amount}}}
-	return s.post(ctx, p, &t)
+	posting := Posting{
+		Key:         transfer.Key,
+		Description: "internal transfer",
+		Entries: []Entry{
+			{AccountID: transfer.From, Amount: transfer.Amount},
+			{AccountID: transfer.To, Amount: transfer.Amount},
+		},
+	}
+	return store.post(requestContext, posting, &transfer)
 }
 
 // Journal is a committed posting and its immutable entry lines.
@@ -127,27 +156,27 @@ type Journal struct {
 	Entries     []Entry   `json:"entries"`
 }
 
-func (s *Store) Journal(ctx context.Context, id int64) (Journal, error) {
-	var j Journal
-	err := s.DB.QueryRow(ctx, `SELECT id,description,created_at FROM journals WHERE id=$1`, id).Scan(&j.ID, &j.Description, &j.CreatedAt)
+func (store *Store) Journal(requestContext context.Context, journalID int64) (Journal, error) {
+	var journal Journal
+	err := store.DB.QueryRow(requestContext, `SELECT id,description,created_at FROM journals WHERE id=$1`, journalID).Scan(&journal.ID, &journal.Description, &journal.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return j, ErrNotFound
+		return journal, ErrNotFound
 	}
 	if err != nil {
-		return j, err
+		return journal, err
 	}
-	rows, err := s.DB.Query(ctx, `SELECT account_id,side,amount FROM entries WHERE journal_id=$1 ORDER BY line`, id)
+	rows, err := store.DB.Query(requestContext, `SELECT account_id,side,amount FROM entries WHERE journal_id=$1 ORDER BY line`, journalID)
 	if err != nil {
-		return j, err
+		return journal, err
 	}
 	defer rows.Close()
-	j.Entries = []Entry{}
+	journal.Entries = []Entry{}
 	for rows.Next() {
-		var e Entry
-		if err = rows.Scan(&e.AccountID, &e.Side, &e.Amount); err != nil {
-			return j, err
+		var entry Entry
+		if err = rows.Scan(&entry.AccountID, &entry.Side, &entry.Amount); err != nil {
+			return journal, err
 		}
-		j.Entries = append(j.Entries, e)
+		journal.Entries = append(journal.Entries, entry)
 	}
-	return j, rows.Err()
+	return journal, rows.Err()
 }
