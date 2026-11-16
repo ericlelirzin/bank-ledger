@@ -15,10 +15,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// testStore creates the current-schema fixture; each test owns its schema and
+// pool.
 func testStore(t testing.TB, configure ...func(*pgxpool.Config)) *Store {
 	return testStoreAtVersion(t, 2, configure...)
 }
+
+// testStoreAtVersion isolates SQL state in a unique schema. Version 1 lets
+// upgrade tests start before migration 002; configuration callbacks can inject
+// connection faults.
 func testStoreAtVersion(t testing.TB, version int, configure ...func(*pgxpool.Config)) *Store {
+	// Helper failures should report the calling test's location. testing.TB lets
+	// tests and benchmarks reuse this fixture; configure is a variadic callback list.
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
@@ -29,11 +37,15 @@ func testStoreAtVersion(t testing.TB, version int, configure ...func(*pgxpool.Co
 	if e != nil {
 		t.Fatal(e)
 	}
+	// A separate search_path gives each fixture independent tables and sequences,
+	// while allowing tests to use the same PostgreSQL server safely.
 	schema := fmt.Sprintf("ledger_test_%d", time.Now().UnixNano())
 	if _, e = admin.Exec(ctx, `CREATE SCHEMA `+schema); e != nil {
 		admin.Close()
 		t.Fatal(e)
 	}
+	// Cleanup runs even after t.Fatal. Later registered cleanup runs first, so
+	// the fixture pool closes before its schema is dropped through the admin pool.
 	t.Cleanup(func() {
 		_, err := admin.Exec(context.Background(), `DROP SCHEMA `+schema+` CASCADE`)
 		admin.Close()
@@ -75,6 +87,9 @@ func testStoreAtVersion(t testing.TB, version int, configure ...func(*pgxpool.Co
 
 	return &Store{DB: db}
 }
+
+// setupAccounts creates policy-controlled accounts and funds them through a
+// real balanced journal, so every test starts with reconcilable balances.
 func setupAccounts(t testing.TB, s *Store) (Account, Account, Account) {
 	t.Helper()
 	ctx := context.Background()
@@ -92,6 +107,10 @@ func setupAccounts(t testing.TB, s *Store) (Account, Account, Account) {
 	}
 	return a, b, funding
 }
+
+// TestPostgresPosting checks replay, payload conflict, overdraft rejection,
+// failed-key reuse, and reconciliation of stored balances against committed
+// entries.
 func TestPostgresPosting(t *testing.T) {
 	s := testStore(t)
 	a, b, _ := setupAccounts(t, s)
@@ -132,15 +151,22 @@ func TestPostgresPosting(t *testing.T) {
 		t.Fatalf("balance reconciliation: %d %v", mismatch, e)
 	}
 }
+
+// TestPostgresConcurrency launches competing spends, then concurrent same-key
+// retries. The assertions check committed balances and journal identity, not
+// goroutine execution order.
 func TestPostgresConcurrency(t *testing.T) {
 	s := testStore(t)
 	a, b, _ := setupAccounts(t, s)
 	ctx := context.Background()
+	// WaitGroup joins all workers before assertions. The mutex protects only the
+	// Go success counter; PostgreSQL locks/constraints protect the actual money.
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	success := 0
 	for i := 0; i < 40; i++ {
 		wg.Add(1)
+		// Pass the worker index explicitly so each request gets a distinct key.
 		go func(i int) {
 			defer wg.Done()
 			_, e := s.Transfer(ctx, Transfer{Key: fmt.Sprintf("spend-%d", i), From: a.ID, To: b.ID, Amount: 10})
@@ -158,6 +184,8 @@ func TestPostgresConcurrency(t *testing.T) {
 		t.Fatalf("success=%d balances=%d,%d", success, aa.Balance, bb.Balance)
 	}
 	// Concurrent retries of the same request must produce one journal.
+	// Buffered channels let every worker publish its result before the main test
+	// starts receiving. Without enough buffering, wg.Wait could wait on blocked sends.
 	ids := make(chan int64, 20)
 	errs := make(chan error, 20)
 	for i := 0; i < 20; i++ {
@@ -189,6 +217,10 @@ func TestPostgresConcurrency(t *testing.T) {
 		t.Fatal(aa.Balance)
 	}
 }
+
+// TestPostgresDatabaseGuards bypasses Go validation with SQL to verify that the
+// database rejects invalid journals, record edits, late appends, and
+// unjournaled funding.
 func TestPostgresDatabaseGuards(t *testing.T) {
 	s := testStore(t)
 	a, b, _ := setupAccounts(t, s)
@@ -234,6 +266,9 @@ func TestPostgresDatabaseGuards(t *testing.T) {
 	}
 }
 
+// TestPostgresConflictAndEarlyConstraintChecks verifies that a skipped line
+// cannot change balances and that early validation cannot hide a later
+// unbalanced append.
 func TestPostgresConflictAndEarlyConstraintChecks(t *testing.T) {
 	s := testStore(t)
 	a, b, _ := setupAccounts(t, s)
@@ -285,6 +320,9 @@ func TestPostgresConflictAndEarlyConstraintChecks(t *testing.T) {
 	}
 }
 
+// TestPostgresOverflowAndJournalReplay checks whole-transaction rollback after
+// overflow, preservation of the caller slice during sorting, and retry after
+// cancellation.
 func TestPostgresOverflowAndJournalReplay(t *testing.T) {
 	s := testStore(t)
 	a, b, f := setupAccounts(t, s)
@@ -333,6 +371,8 @@ func TestPostgresOverflowAndJournalReplay(t *testing.T) {
 	}
 }
 
+// TestPostgresOpposingTransfers stresses opposite directions on the same
+// accounts. Both directions must follow the same ascending account-lock order.
 func TestPostgresOpposingTransfers(t *testing.T) {
 	s := testStore(t)
 	a, b, _ := setupAccounts(t, s)

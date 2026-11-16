@@ -1,3 +1,4 @@
+# Local development wiring: one database and one Go application process.
 services:
   db:
     image: postgres:17-bookworm
@@ -7,6 +8,7 @@ services:
       POSTGRES_DB: ledger
     ports:
       - "127.0.0.1:5432:5432"
+    # Persist database files when a container is recreated; this is not a backup.
     volumes:
       - ledger-data:/var/lib/postgresql/data
     healthcheck:
@@ -17,6 +19,8 @@ services:
   app:
     build: .
     environment:
+      # "db" resolves inside the Compose network. These credentials/TLS settings
+      # are for local development, not public deployment.
       DATABASE_URL: postgres://ledger:ledger@db:5432/ledger?sslmode=disable
       REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-10s}
       DB_LOCK_TIMEOUT: ${DB_LOCK_TIMEOUT:-2s}
@@ -25,6 +29,7 @@ services:
       SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
     ports:
       - "127.0.0.1:8080:8080"
+    # Wait for reachability before startup; Go then applies migrations before HTTP.
     depends_on:
       db:
         condition: service_healthy

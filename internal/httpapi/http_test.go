@@ -9,6 +9,8 @@ import (
 	"bank-ledger/internal/ledger"
 )
 
+// TestDecode rejects malformed, oversized, fractional, and trailing JSON input
+// while preserving the full precision of an accepted int64 amount.
 func TestDecode(t *testing.T) {
 	for _, body := range []string{`{"amount":1.2}`, `{"unknown":1}`, `{"amount":1} {}`, ``, strings.Repeat(" ", (1<<20)+1) + `{"amount":1}`} {
 		w := httptest.NewRecorder()
@@ -30,6 +32,8 @@ func TestDecode(t *testing.T) {
 	}
 }
 
+// TestDuplicateKeys covers nested, escaped, and case-folded aliases. Separate
+// objects may reuse a name; the same object may not.
 func TestDuplicateKeys(t *testing.T) {
 	for _, body := range []string{
 		`{"amount":1,"amount":2}`, `{"amount":1,"Amount":2}`, `{"amount":1,"\u0061mount":2}`,
@@ -53,6 +57,9 @@ func TestDuplicateKeys(t *testing.T) {
 	}
 }
 
+// TestNestedUnknownFieldsAndDuplicateRejectionBeforePosting uses a nil pool: a
+// panic would expose invalid input reaching database operations before decoding
+// rejected it.
 func TestNestedUnknownFieldsAndDuplicateRejectionBeforePosting(t *testing.T) {
 	for _, body := range []string{
 		`{"idempotency_key":"x","entries":[{"account_id":1,"side":"debit","amount":1,"unknown":0}]}`,
@@ -69,6 +76,8 @@ func TestNestedUnknownFieldsAndDuplicateRejectionBeforePosting(t *testing.T) {
 	}
 }
 
+// TestJSONNestingLimit prevents the recursive token walk from accepting nesting
+// beyond the typed decoder limit.
 func TestJSONNestingLimit(t *testing.T) {
 	body := strings.Repeat("[", 10001) + "0" + strings.Repeat("]", 10001)
 	w := httptest.NewRecorder()

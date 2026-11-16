@@ -3,6 +3,8 @@
 An educational, correctness-first double-entry ledger in Go and PostgreSQL.
 Version 0.2 is a modular monolith: one Go process, one database, pgx, and handwritten SQL. It is not production banking software.
 
+For self-guided code reading, start with the [reading sessions](docs/reading-guide.md). Inline comments connect Go syntax, PostgreSQL statements, failure cases, and the tests that check each guarantee.
+
 ## What works
 
 - Chart of accounts with asset, liability, equity, income, and expense accounts.
@@ -126,7 +128,7 @@ make bench
 
 The benchmark requires `TEST_DATABASE_URL`. A deterministic plaintext PostgreSQL test hides a successful COMMIT acknowledgment from pgx and checks same-key recovery. Tests also cover rollback of a contested key holder, in-flight cancellation, real HTTP lock/deadline errors, connection release, shutdown, and isolated SQL invariants. External proxy faults and server crash recovery remain separate experiments.
 
-Upgrading a v0.1 database applies `002_reliability.sql` transactionally and preserves existing journals and balances. Migration `001_ledger.sql` is unchanged; no manual schema reset is required.
+Upgrading a v0.1 database applies `002_reliability.sql` transactionally and preserves existing journals and balances. Executable SQL in `001_ledger.sql` is unchanged; added teaching comments do not alter the schema or require a manual reset.
 
 See [architecture](docs/architecture.md) for the invariants, transaction protocol, and deliberate limitations. See [validation](docs/validation.md) for checks executed while hardening v0.2.
 

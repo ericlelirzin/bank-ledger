@@ -7,6 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        # Run the same suite against both supported PostgreSQL major versions.
         postgres: ['17', '18']
     services:
       postgres:
@@ -23,6 +24,7 @@ jobs:
           --health-timeout 3s
           --health-retries 20
     env:
+      # Supplying this variable enables integration tests; without it they skip.
       TEST_DATABASE_URL: postgres://ledger:ledger@localhost:5432/ledger_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
@@ -31,5 +33,6 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go vet ./...
+      # Disable cached test results and exercise Go races plus database invariants.
       - run: go test -race -count=1 -timeout=2m ./...
       - run: go build ./cmd/ledger

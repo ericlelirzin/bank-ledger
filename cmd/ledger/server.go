@@ -13,9 +13,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// serve owns HTTP lifetime. Request cancellation is separated from the process
+// signal so a shutdown signal first grants active requests time to finish.
 func serve(applicationContext context.Context, listener net.Listener, databasePool *pgxpool.Pool, settings config) error {
 	requestContext, cancelRequests := context.WithCancel(context.Background())
 	defer cancelRequests()
+	// Socket limits bound slow clients reading/writing HTTP. The handler also
+	// adds a context deadline to bound pool acquisition and database work.
 	server := &http.Server{
 		Handler:           httpapi.Handler(&ledger.Store{DB: databasePool}, settings.Request),
 		BaseContext:       func(net.Listener) context.Context { return requestContext },
@@ -24,6 +28,9 @@ func serve(applicationContext context.Context, listener net.Listener, databasePo
 		WriteTimeout:      settings.Request + 2*time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	// Serve blocks, so run it in a goroutine while this function waits for either
+	// a server error or shutdown signal. A one-slot channel lets it report its
+	// final result even if this function has already chosen the shutdown path.
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.Serve(listener) }()
 	select {
@@ -37,6 +44,8 @@ func serve(applicationContext context.Context, listener net.Listener, databasePo
 	// Reserve half the shutdown budget for cancellation and cleanup after grace.
 	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), settings.Shutdown/2)
 	defer cancelShutdown()
+	// Shutdown stops accepting new connections and waits for active handlers.
+	// After grace, cancel their base context and force-close sockets if necessary.
 	err := server.Shutdown(shutdownContext)
 	cancelRequests()
 	if err != nil {
@@ -49,6 +58,8 @@ func serve(applicationContext context.Context, listener net.Listener, databasePo
 // pgxpool.Close waits for checked-out connections. Bound that wait even if a
 // handler or network peer fails to react to cancellation; main can still exit.
 func closePool(databasePool *pgxpool.Pool, timeout time.Duration) {
+	// Closing the channel broadcasts completion. The timeout bounds our wait;
+	// it does not guarantee that a stuck Close goroutine finished before exit.
 	poolClosed := make(chan struct{})
 	go func() { databasePool.Close(); close(poolClosed) }()
 	select {

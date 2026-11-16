@@ -12,6 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// The connection wrapper and test coordinate through atomic flags because they
+// run on different goroutines. This fault injection exists only in test code.
 type ackFault struct{ armed, committed atomic.Bool }
 type ackLossConn struct {
 	net.Conn
@@ -56,6 +58,10 @@ func (c *ackLossConn) Read(p []byte) (int, error) {
 		}
 	}
 }
+
+// TestPostgresLostCommitAcknowledgment proves the server committed while pgx
+// saw a transport error. An identical retry must return that journal and avoid
+// a second balance change.
 func TestPostgresLostCommitAcknowledgment(t *testing.T) {
 	fault := &ackFault{}
 	s := testStore(t, func(cfg *pgxpool.Config) {
@@ -74,6 +80,7 @@ func TestPostgresLostCommitAcknowledgment(t *testing.T) {
 	a, b, _ := setupAccounts(t, s)
 	ctx := context.Background()
 	tr := Transfer{Key: "lost-ack", From: a.ID, To: b.ID, Amount: 5}
+	// Arm only after setup so the hidden response belongs to the target posting.
 	fault.armed.Store(true)
 	first, err := s.Transfer(ctx, tr)
 	if err == nil || !fault.committed.Load() {

@@ -18,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// serverDB builds an isolated schema using the same timeout configuration as
+// the executable. Cleanup closes its pool and drops only that test schema.
 func serverDB(t *testing.T, c config) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
@@ -64,6 +66,9 @@ func serverDB(t *testing.T, c config) *pgxpool.Pool {
 	}
 	return db
 }
+
+// startServer starts real HTTP on an available local port. Its returned cancel
+// function exercises the same shutdown signal path as the running application.
 func startServer(t *testing.T, db *pgxpool.Pool, c config) (string, context.CancelFunc, <-chan error) {
 	t.Helper()
 	listener, e := net.Listen("tcp", "127.0.0.1:0")
@@ -76,6 +81,10 @@ func startServer(t *testing.T, db *pgxpool.Pool, c config) (string, context.Canc
 	t.Cleanup(cancel)
 	return "http://" + listener.Addr().String(), cancel, done
 }
+
+// waitAccountBlocked observes PostgreSQL lock waits before triggering a
+// failure, avoiding a timing guess that could cancel before the request reached
+// SQL.
 func waitAccountBlocked(t *testing.T, db *pgxpool.Pool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -92,6 +101,9 @@ func waitAccountBlocked(t *testing.T, db *pgxpool.Pool) {
 	}
 	t.Fatal("request did not block on account")
 }
+
+// waitPoolReleased checks that cancelled work returns checked-out connections,
+// preventing a slow leak that would exhaust the pool under load.
 func waitPoolReleased(t *testing.T, db *pgxpool.Pool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -106,6 +118,9 @@ func waitPoolReleased(t *testing.T, db *pgxpool.Pool) {
 
 const transferBody = `{"idempotency_key":"blocked","from_account_id":1,"to_account_id":2,"amount":1}`
 
+// TestPostgresLockTimeout holds an account lock and verifies a real HTTP
+// posting reports the configured PostgreSQL lock timeout without retaining a
+// journal.
 func TestPostgresLockTimeout(t *testing.T) {
 	c := config{Request: 2 * time.Second, Lock: 100 * time.Millisecond, Statement: time.Second, IdleTransaction: 5 * time.Second, Shutdown: time.Second}
 	db := serverDB(t, c)
@@ -144,6 +159,10 @@ func TestPostgresLockTimeout(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+// TestPostgresRequestDeadlineAndClientCancellation exercises both the whole-
+// handler deadline and a disconnected client, then checks connection release
+// and absence of committed partial work.
 func TestPostgresRequestDeadlineAndClientCancellation(t *testing.T) {
 	for _, mode := range []string{"deadline", "client cancellation"} {
 		t.Run(mode, func(t *testing.T) {
@@ -203,6 +222,9 @@ func TestPostgresRequestDeadlineAndClientCancellation(t *testing.T) {
 		})
 	}
 }
+
+// TestPostgresBoundedShutdown leaves a request blocked in PostgreSQL while
+// stopping the server; graceful waiting must end within the shutdown budget.
 func TestPostgresBoundedShutdown(t *testing.T) {
 	c := config{Request: 10 * time.Second, Lock: 5 * time.Second, Statement: 6 * time.Second, IdleTransaction: 8 * time.Second, Shutdown: 400 * time.Millisecond}
 	db := serverDB(t, c)
@@ -254,6 +276,10 @@ func TestPostgresBoundedShutdown(t *testing.T) {
 		t.Fatal("client connection stayed open")
 	}
 }
+
+// TestPoolCloseIsBounded deliberately holds a connection while closing the
+// pool. The application must stop waiting even though pool.Close itself is
+// still blocked.
 func TestPoolCloseIsBounded(t *testing.T) {
 	c := config{Request: time.Second, Lock: 100 * time.Millisecond, Statement: 500 * time.Millisecond, IdleTransaction: time.Second, Shutdown: time.Second}
 	db := serverDB(t, c)
@@ -269,6 +295,8 @@ func TestPoolCloseIsBounded(t *testing.T) {
 	conn.Release()
 }
 
+// TestPostgresStatementAndIdleTimeouts exercises server-side statement
+// cancellation and termination of sessions left idle inside transactions.
 func TestPostgresStatementAndIdleTimeouts(t *testing.T) {
 	c := config{Request: 2 * time.Second, Lock: 100 * time.Millisecond, Statement: 300 * time.Millisecond, IdleTransaction: 100 * time.Millisecond, Shutdown: time.Second}
 	db := serverDB(t, c)
@@ -294,6 +322,9 @@ func TestPostgresStatementAndIdleTimeouts(t *testing.T) {
 	}
 }
 
+// TestPostgresGracefulCompletion verifies that work which can finish within the
+// grace period commits normally instead of being cancelled immediately on
+// shutdown.
 func TestPostgresGracefulCompletion(t *testing.T) {
 	c := config{Request: 2 * time.Second, Lock: time.Second, Statement: 1500 * time.Millisecond, IdleTransaction: 3 * time.Second, Shutdown: time.Second}
 	db := serverDB(t, c)

@@ -16,6 +16,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// TestPostgresHTTPFlow drives HTTP decoding, ledger posting, SQL constraints,
+// replay, and error mapping together against a real PostgreSQL schema.
 func TestPostgresHTTPFlow(t *testing.T) {
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {

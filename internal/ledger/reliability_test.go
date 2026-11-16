@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// requirePG checks both SQLSTATE and diagnostic text so a test cannot pass
+// because some unrelated database constraint failed first.
 func requirePG(t testing.TB, err error, code, detail string) {
 	t.Helper()
 	var pg *pgconn.PgError
@@ -46,6 +48,9 @@ func waitBlocked(t testing.TB, s *Store) {
 	}
 }
 
+// TestPostgresInitialKeyHolderRollback makes one transaction hold a key, then
+// roll back. A waiting request must acquire that released key and post
+// successfully.
 func TestPostgresInitialKeyHolderRollback(t *testing.T) {
 	s := testStore(t)
 	a, b, _ := setupAccounts(t, s)
@@ -86,6 +91,9 @@ func TestPostgresInitialKeyHolderRollback(t *testing.T) {
 	}
 }
 
+// TestPostgresCancelledKeyWaiter cancels a request blocked on a key and
+// verifies that cancellation does not reserve the key or prevent a later
+// successful retry.
 func TestPostgresCancelledKeyWaiter(t *testing.T) {
 	s := testStore(t)
 	a, b, _ := setupAccounts(t, s)
@@ -123,6 +131,9 @@ func TestPostgresCancelledKeyWaiter(t *testing.T) {
 	}
 }
 
+// TestPostgresConcurrentConflictingKeys submits different payloads with one key
+// while locks control the timing. Exactly one payload can commit; the other
+// must conflict.
 func TestPostgresConcurrentConflictingKeys(t *testing.T) {
 	s := testStore(t)
 	a, b, _ := setupAccounts(t, s)
@@ -181,6 +192,9 @@ func TestPostgresConcurrentConflictingKeys(t *testing.T) {
 	}
 }
 
+// TestPostgresIndividualInvariants isolates late append, totals, currency, and
+// empty-journal failures so the intended invariant is the reason each write is
+// rejected.
 func TestPostgresIndividualInvariants(t *testing.T) {
 	s := testStore(t)
 	a, b, _ := setupAccounts(t, s)
@@ -236,6 +250,9 @@ func TestPostgresIndividualInvariants(t *testing.T) {
 	}
 }
 
+// TestPostgresIntegerBoundaries distinguishes large aggregate totals from
+// individual balance limits, including exact MinInt64 and rejection of
+// transient overflow.
 func TestPostgresIntegerBoundaries(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -275,6 +292,9 @@ func TestPostgresIntegerBoundaries(t *testing.T) {
 	requirePG(t, e, "22003", "out of range")
 }
 
+// TestPostgresCancellationAfterAppliedEntry pauses after an earlier entry
+// already changed a balance inside the transaction. Cancellation must roll back
+// that partial work too.
 func TestPostgresCancellationAfterAppliedEntry(t *testing.T) {
 	s := testStore(t)
 	a, b, _ := setupAccounts(t, s)
@@ -332,6 +352,9 @@ func TestPostgresCancellationAfterAppliedEntry(t *testing.T) {
 	}
 }
 
+// TestPostgresQueueSurvivesSavepointRollback validates, rolls back to a
+// savepoint, then appends. The restored queue marker must still enforce the
+// final journal check.
 func TestPostgresQueueSurvivesSavepointRollback(t *testing.T) {
 	s := testStore(t)
 	a, b, _ := setupAccounts(t, s)
@@ -361,6 +384,8 @@ func TestPostgresQueueSurvivesSavepointRollback(t *testing.T) {
 	requirePG(t, tx.Commit(ctx), "23514", "journal must have")
 }
 
+// TestPostgresUpgradeFromV1 applies 002 over populated v1 data, checking that
+// balances survive and new postings work without resetting the schema.
 func TestPostgresUpgradeFromV1(t *testing.T) {
 	s := testStoreAtVersion(t, 1)
 	a, b, _ := setupAccounts(t, s)
@@ -384,6 +409,9 @@ func TestPostgresUpgradeFromV1(t *testing.T) {
 	}
 }
 
+// TestPostgresValidationOncePerDirtyJournal counts actual marker drains. Many
+// lines should share one aggregate validation until an explicit constraint
+// flush starts a new epoch.
 func TestPostgresValidationOncePerDirtyJournal(t *testing.T) {
 	s := testStore(t)
 	a, _, _ := setupAccounts(t, s)
@@ -424,6 +452,9 @@ func TestPostgresValidationOncePerDirtyJournal(t *testing.T) {
 	}
 }
 
+// TestPostgresEntryChecksAndQueueProtection directly tests amount, side,
+// foreign-key, and queue-tampering failures with their expected SQLSTATE
+// diagnostics.
 func TestPostgresEntryChecksAndQueueProtection(t *testing.T) {
 	s := testStore(t)
 	a, _, _ := setupAccounts(t, s)

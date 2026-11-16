@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// TestConfig checks duration parsing, allowed bounds, timeout ordering, and
+// conversion into PostgreSQL connection parameters without needing a live
+// server.
 func TestConfig(t *testing.T) {
 	for _, key := range []string{"REQUEST_TIMEOUT", "DB_LOCK_TIMEOUT", "DB_STATEMENT_TIMEOUT", "DB_IDLE_TX_TIMEOUT", "SHUTDOWN_TIMEOUT"} {
 		t.Setenv(key, "")

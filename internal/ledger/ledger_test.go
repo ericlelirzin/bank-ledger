@@ -27,6 +27,8 @@ func TestRequestHashCompatibility(t *testing.T) {
 	}
 }
 
+// TestValidate exercises pure Go checks without a database, including sums that
+// could wrap int64 and accidentally accept unequal totals.
 func TestValidate(t *testing.T) {
 	valid := Posting{Key: "key", Entries: []Entry{{1, "debit", 100}, {2, "credit", 100}}}
 	if e := Validate(valid); e != nil {
