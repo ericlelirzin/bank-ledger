@@ -160,8 +160,12 @@ PostgreSQL 17 and 18.
 
 ## Explore the implementation
 
+[AGENTS.md](AGENTS.md) gives new contributors and coding assistants a code map,
+a payment trace, and verification commands.
+
 | Location | What to look for |
 | --- | --- |
+| `web/` | React dashboard and API client |
 | `internal/banking/` | Business accounts, recipients, transfers, and timelines |
 | `internal/ledger/` | Accounting rules and posting transactions |
 | `internal/httpapi/` | API routes and request validation |
