@@ -1,137 +1,182 @@
-# bank-ledger
+# Banking accounts and transfers
 
-An educational, correctness-first double-entry ledger in Go and PostgreSQL.
-Version 0.2 is a modular monolith: one Go process, one database, pgx, and handwritten SQL. It is not production banking software.
+A banking backend built with Go and PostgreSQL. Open a simulated business account,
+add pretend money, and send a transfer to a fictional recipient.
 
-## What works
+The goal is to build a financial application that handles money carefully—and
+makes it possible to understand what happened when something goes wrong.
 
-- Chart of accounts with asset, liability, equity, income, and expense accounts.
-- Immutable journals with positive integer debit/credit entries; total debits must equal total credits in one currency.
-- Atomic posting, transaction rollback, account balance queries, and internal transfers.
-- Persistent idempotency keys, ordered account locks, overdraft checks, and overflow rejection.
-- Forward SQL migrations, bounded database waits and shutdown, strict JSON parsing, a minimal HTTP API, Docker Compose, and unit/PostgreSQL integration tests.
+**Current stage:** a working backend you can try from your terminal. There is no
+web dashboard or hosted demo yet. All money is simulated. Authentication and
+separate visitor sessions still need to be built before a public launch.
 
-## Run with Docker Compose
+## What you can do today
 
-Requires Docker with Compose v2:
+- Open a USD business account and add simulated funds.
+- Save recipients, called **beneficiaries**.
+- Send transfers and follow their progress.
+- See how much money is available and how much is reserved for pending transfers.
+- View transfer history and the accounting records behind each transfer.
+
+## Run it on your computer
+
+Install Docker with Docker Compose, then open a terminal in this repository:
 
 ```sh
 docker compose up --build
 ```
 
-The API listens on `http://localhost:8080`. PostgreSQL is available on `localhost:5432`. Both ports bind only to localhost. The application applies forward migrations at startup; database data persists in a named volume. The Compose credentials are local development credentials.
+This starts three things:
+
+| Part | What it does |
+| --- | --- |
+| API | Receives requests at `http://localhost:8080` |
+| Database | Saves accounts, transfers, and accounting records |
+| Worker | Picks up pending transfers and completes them through a simulated bank |
+
+Keep that terminal open. In a second terminal, check that the API is ready:
 
 ```sh
 curl --fail http://localhost:8080/healthz
 ```
 
-Stop with `docker compose down`; this preserves the database volume.
+Once startup finishes, you should see `{"status":"ok"}`. This is an API, so opening
+its address in a browser will not show a banking dashboard.
 
-## Run Go locally
+## Try it: add $100, then send $25
 
-Requires Go 1.25+ and PostgreSQL 17+:
+Amounts are written in **cents**: `10000` means $100.00.
+These commands use a Bash-compatible shell and `curl`.
+
+### 1. Open an account
 
 ```sh
-docker compose up -d db
-export DATABASE_URL='postgres://ledger:ledger@localhost:5432/ledger?sslmode=disable'
-go run ./cmd/ledger
+curl --fail-with-body http://localhost:8080/bank/accounts \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Wizard Works"}'
 ```
 
-`HTTP_ADDR` defaults to `:8080`. The following environment variables configure reliability limits; Compose forwards them with the same defaults:
+The response includes an `id`. Put that number below, replacing `1` if necessary.
+Keep using the same terminal for the remaining steps:
 
-| Variable | Default | Purpose |
+```sh
+ACCOUNT_ID=1
+```
+
+### 2. Add $100 of pretend money
+
+```sh
+curl --fail-with-body "http://localhost:8080/bank/accounts/$ACCOUNT_ID/simulated-funding" \
+  -H 'Content-Type: application/json' \
+  --data @- <<EOF_JSON
+{"idempotency_key":"demo-funding-$ACCOUNT_ID","amount":10000}
+EOF_JSON
+```
+
+An **idempotency key** identifies one operation. If you repeat this request with
+the same key and details, the API will not add another $100. A new operation needs
+a new key. Reusing a key with different details returns an error.
+
+### 3. Send $25 to a fictional supplier
+
+```sh
+curl --fail-with-body http://localhost:8080/bank/transfers \
+  -H 'Content-Type: application/json' \
+  --data @- <<EOF_JSON
+{"idempotency_key":"demo-payment-$ACCOUNT_ID","account_id":$ACCOUNT_ID,"destination":"SIM-SUPPLIER-001","amount":2500}
+EOF_JSON
+```
+
+The transfer starts as `pending`. The worker then asks the simulated bank to
+complete it, and the status changes to `settled`.
+
+### 4. Check the result
+
+```sh
+curl --fail "http://localhost:8080/bank/accounts/$ACCOUNT_ID"
+curl --fail "http://localhost:8080/bank/accounts/$ACCOUNT_ID/transfers"
+```
+
+After settlement, all balances are in cents:
+
+| Field | Expected value | Meaning |
 | --- | --- | --- |
-| `REQUEST_TIMEOUT` | `10s` | Whole HTTP handler deadline, including connection acquisition and posting |
-| `DB_LOCK_TIMEOUT` | `2s` | Maximum PostgreSQL lock wait per acquisition |
-| `DB_STATEMENT_TIMEOUT` | `5s` | Maximum PostgreSQL statement execution time |
-| `DB_IDLE_TX_TIMEOUT` | `5s` | Terminates a session left idle in a transaction |
-| `SHUTDOWN_TIMEOUT` | `10s` | Combined graceful drain and bounded pool cleanup budget |
+| `posted_balance` | `7500` | $75 remains after the completed payment |
+| `available_balance` | `7500` | $75 can be used for another transfer |
+| `reserved_balance` | `0` | Nothing is waiting to be sent |
 
-Use Go duration syntax. Values must be between `1ms` and `1h`, with `DB_LOCK_TIMEOUT < DB_STATEMENT_TIMEOUT < REQUEST_TIMEOUT`. Half the shutdown budget is reserved for graceful requests; after that, handlers are cancelled and client connections closed. Pool cleanup gets the remaining half. A timeout never promises that an in-flight commit rolled back: retry an uncertain posting with the **same key and identical payload**.
+If the worker has not finished yet, you may briefly see $100 posted, $75
+available, and $25 reserved. Run the commands again after a moment.
 
-To apply migrations without starting the API:
+To inspect a transfer's timeline, take its `id` from the response and request
+`GET /bank/transfers/{id}/timeline`. It shows when the transfer was created,
+funds were reserved, the simulated bank confirmed it, and settlement completed.
 
-```sh
-go run ./cmd/ledger migrate
-```
+## Stop it
 
-## Try a posting and transfer
-
-These examples assume a fresh database, where the created account IDs are 1, 2, and 3. On an existing database, use the IDs returned by account creation. There is no preloaded money: opening balances require a balanced journal.
+Press Ctrl+C in the first terminal, then run:
 
 ```sh
-curl --fail-with-body localhost:8080/accounts -H 'Content-Type: application/json' -d \
-  '{"code":"1000","name":"Bank cash","kind":"asset","currency":"USD","normal_side":"debit"}'
-curl --fail-with-body localhost:8080/accounts -H 'Content-Type: application/json' -d \
-  '{"code":"2001","name":"Alice deposit","kind":"liability","currency":"USD","normal_side":"credit"}'
-curl --fail-with-body localhost:8080/accounts -H 'Content-Type: application/json' -d \
-  '{"code":"2002","name":"Bob deposit","kind":"liability","currency":"USD","normal_side":"credit"}'
-
-# Record an educational example of a $100 deposit: debit bank cash, credit Alice.
-curl --fail-with-body localhost:8080/journals -H 'Content-Type: application/json' -d \
-  '{"idempotency_key":"deposit-001","description":"Opening deposit","entries":[{"account_id":1,"side":"debit","amount":10000},{"account_id":2,"side":"credit","amount":10000}]}'
-
-# Move $25 of the bank liability from Alice to Bob.
-curl --fail-with-body localhost:8080/transfers -H 'Content-Type: application/json' -d \
-  '{"idempotency_key":"transfer-001","from_account_id":2,"to_account_id":3,"amount":2500}'
-
-curl --fail localhost:8080/accounts/2
-curl --fail localhost:8080/accounts/3
-curl --fail localhost:8080/journals/2
+docker compose down
 ```
 
-Alice's normal-side balance is `7500`; Bob's is `2500`. Repeating the identical transfer returns the same `journal_id` and `"replayed":true`. Changing its amount while reusing `transfer-001` returns HTTP 409.
+Your data stays saved for the next run.
 
-## API
+## How the money is tracked
 
-| Method | Path | Behavior |
-| --- | --- | --- |
-| GET | `/healthz` | Checks database connectivity |
-| POST | `/accounts` | Creates a zero-balance account |
-| GET | `/accounts` | Lists the chart of accounts with current balances |
-| GET | `/accounts/{id}` | Reads account details and normal-side balance |
-| POST | `/journals` | Posts 2–1000 balanced entries atomically |
-| GET | `/journals/{id}` | Reads a committed journal and its entries |
-| POST | `/transfers` | Posts a transfer between distinct accounts with matching currency and normal side |
+The **ledger** is the accounting engine underneath the product. Each movement
+creates a balanced accounting record: the amount leaving one place matches the
+amount entering another. Saved records cannot be edited through normal database
+writes; a correction needs a new record.
 
-Successful requests return HTTP 200 and JSON. Errors use `{"error":"..."}`: 400 for malformed requests, 404 for missing accounts or journals, 409 for conflicting keys/account codes, 422 for database policy or balance violations, 503 for retryable transaction aborts or PostgreSQL timeouts, and 504 for a request deadline. Unexpected failures return 500 without database details. Unsupported routes and methods use Go's standard HTTP responses. Requests reject unknown fields and duplicate object keys at every nesting level, including escaped equivalents and case-folded aliases such as `amount`/`Amount`. This intentionally rejects ambiguous JSON accepted by v0.1. The 1 MiB request limit and integer JSON representation are unchanged.
+When you send a transfer, its money moves from available to reserved. This stops
+another transfer from spending the same funds. When settlement finishes, the
+reserved funds leave the account.
 
-Account fields are `code`, `name`, `kind`, `currency` (three uppercase letters), `normal_side` (`debit` or `credit`), and optional `allow_overdraft` (defaults to false). Account identity and policy cannot be edited in v0.2. Normal side is explicit to allow contra accounts; the usual convention is debit for assets/expenses and credit for liabilities/equity/income.
+If processing stops after the simulated bank confirms a payment, the worker can
+retry without paying twice. Tests exercise this failure and check the balances.
 
-Amounts are **positive signed 64-bit integers in currency minor units**. No floating point or currency conversion is used. Currency exponent metadata is outside v0.2; callers must agree on the unit (for USD, cents). JSON clients must preserve 64-bit integers; JavaScript `Number` cannot represent all accepted values exactly. Balances increase on the account's normal side and decrease on its opposite side. Negative balances are allowed only when explicitly configured.
+## Run the tests
 
-Keys are required, database-wide, shared across journal and transfer endpoints, and retained permanently. Request identity uses the decoded typed fields, including description and entry order, so JSON whitespace/property order does not affect replay. Entry reordering does change request identity. A failed transaction does not reserve its key. After any network error or uncertain commit outcome, retry the identical request with the **same key**; do not generate a new key.
-
-## Test
+For local Go development, install Go 1.25 or later. Run:
 
 ```sh
 go test -race ./...
 ```
 
-Without `TEST_DATABASE_URL`, PostgreSQL integration tests explicitly skip. To run the complete suite:
+That command skips database tests unless `TEST_DATABASE_URL` is set. To include
+them, start the development database and run:
 
 ```sh
 docker compose up -d db
 export TEST_DATABASE_URL='postgres://ledger:ledger@localhost:5432/ledger?sslmode=disable'
-make integration
+go test -race -count=1 -timeout=2m ./...
 ```
 
-Integration tests create a unique schema per test, apply the migration twice to check repeatability, and drop only their own schemas afterward. The test role needs schema creation permissions. Use a development/test database. Tests cover concurrent spending, opposite-direction transfers, concurrent retries, payload conflicts, rollback, overflow, currency rules, immutable records, balance reconciliation, and direct SQL constraint enforcement. CI runs the suite against PostgreSQL 17 and 18.
+Use a development database. Each integration test creates and removes its own
+isolated database schema. Tests cover competing transfers, repeated requests,
+failed settlement recovery, balances, and database upgrades. CI tests against
+PostgreSQL 17 and 18.
 
-For a database trigger benchmark comparing the unchanged v0.1 schema with v0.2:
+## Explore the implementation
 
-```sh
-make bench
-```
+| Location | What to look for |
+| --- | --- |
+| `internal/banking/` | Business accounts, recipients, transfers, and timelines |
+| `internal/ledger/` | Accounting rules and posting transactions |
+| `internal/httpapi/` | API routes and request validation |
+| `cmd/ledger/` | Starting the API or worker |
+| `migrations/` | Changes to the database structure |
 
-The benchmark requires `TEST_DATABASE_URL`. A deterministic plaintext PostgreSQL test hides a successful COMMIT acknowledgment from pgx and checks same-key recovery. Tests also cover rollback of a contested key holder, in-flight cancellation, real HTTP lock/deadline errors, connection release, shutdown, and isolated SQL invariants. External proxy faults and server crash recovery remain separate experiments.
+For more detail:
 
-Upgrading a v0.1 database applies `002_reliability.sql` transactionally and preserves existing journals and balances. Migration `001_ledger.sql` is unchanged; no manual schema reset is required.
+- [Banking guide](docs/banking.md): recipients, timelines, and transfer processing.
+- [Ledger reference](docs/ledger-reference.md): accounting API and local configuration.
+- [Architecture](docs/architecture.md): transaction rules and failure handling.
+- [Earlier ledger validation](docs/validation.md): checks and measurements from v0.2.
 
-See [architecture](docs/architecture.md) for the invariants, transaction protocol, and deliberate limitations. See [validation](docs/validation.md) for checks executed while hardening v0.2.
-
-## Scope
-
-No authentication, authorization, external payments, reconciliation service, holds, fees, FX, interest, account closure, pagination, or production operations tooling is included. Corrections use new compensating journals, never edits to posted entries. Run this educational API only in a trusted development environment.
+Next steps are a richer simulated bank, reconciliation (checking our records
+against the bank's records), visitor access controls, a web dashboard, and AWS
+deployment. These are planned work, not features already available.
 
 Licensed under the [MIT License](LICENSE).

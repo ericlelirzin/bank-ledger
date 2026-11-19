@@ -15,6 +15,12 @@ var initial string
 //go:embed 002_reliability.sql
 var reliability string
 
+//go:embed 003_banking.sql
+var banking string
+
+//go:embed 004_beneficiaries.sql
+var beneficiaries string
+
 func Apply(ctx context.Context, db *pgxpool.Pool) error {
 	tx, e := db.Begin(ctx)
 	if e != nil {
@@ -31,7 +37,7 @@ func Apply(ctx context.Context, db *pgxpool.Pool) error {
 	if _, e = tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations(version integer PRIMARY KEY)`); e != nil {
 		return e
 	}
-	for i, sql := range []string{initial, reliability} {
+	for i, sql := range []string{initial, reliability, banking, beneficiaries} {
 		version := i + 1
 		var exists bool
 		if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, version).Scan(&exists); e != nil {

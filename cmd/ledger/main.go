@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"bank-ledger/internal/banking"
 	"bank-ledger/migrations"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,8 +23,8 @@ func main() {
 	}
 }
 func run() error {
-	if len(os.Args) > 2 || (len(os.Args) == 2 && os.Args[1] != "migrate") {
-		return fmt.Errorf("usage: ledger [migrate]")
+	if len(os.Args) > 2 || (len(os.Args) == 2 && os.Args[1] != "migrate" && os.Args[1] != "worker") {
+		return fmt.Errorf("usage: ledger [migrate|worker]")
 	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -51,6 +52,24 @@ func run() error {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		return nil
+	}
+	if len(os.Args) == 2 && os.Args[1] == "worker" {
+		store := &banking.Store{DB: db}
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+			}
+			work, cancel := context.WithTimeout(ctx, c.Request)
+			_, err := store.ProcessOne(work)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				slog.Error("transfer processing failed", "error", err)
+			}
+		}
 	}
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {
