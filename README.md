@@ -6,9 +6,9 @@ add pretend money, and send a transfer to a fictional recipient.
 The goal is to build a financial application that handles money carefully—and
 makes it possible to understand what happened when something goes wrong.
 
-**Current stage:** a working backend you can try from your terminal. There is no
-web dashboard or hosted demo yet. All money is simulated. Authentication and
-separate visitor sessions still need to be built before a public launch.
+**Current stage:** a simulated banking backend and a local personal banking
+dashboard. All money is simulated. A public demo will require server-side access
+controls and separate visitor sessions.
 
 ## What you can do today
 
@@ -175,8 +175,28 @@ For more detail:
 - [Architecture](docs/architecture.md): transaction rules and failure handling.
 - [Earlier ledger validation](docs/validation.md): checks and measurements from v0.2.
 
-Next steps are a richer simulated bank, reconciliation (checking our records
-against the bank's records), visitor access controls, a web dashboard, and AWS
-deployment. These are planned work, not features already available.
+## Run the personal banking dashboard
+
+The React and TypeScript dashboard lives in `web/`. Start the API, PostgreSQL,
+and the settlement worker with `docker compose up --build`. Then start Vite
+using Node.js 20.19+ or 22.12+:
+
+```sh
+cd web
+npm ci
+npm run dev
+```
+
+Open `http://localhost:5173`. The first visit creates an Everyday demo account,
+posts two sample deposits, and reserves four sample payments through the Go API.
+The worker settles the transfers. Sample activity dates are illustrative, while
+journal and timeline details come from the ledger. The browser remembers the
+demo account locally. Go still validates and posts every payment.
+
+Run `npm run build` in `web/` to type-check and build the frontend. Set
+`BANK_API_URL` if the local API is listening somewhere other than
+`http://127.0.0.1:8080`. Keep this dashboard in local development. The demo
+account reference is stored in the browser and the existing API requires server-side
+authorization and visitor isolation before a public deployment.
 
 Licensed under the [MIT License](LICENSE).
