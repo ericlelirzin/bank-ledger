@@ -100,10 +100,11 @@ local settlement is forced to roll back. Concurrent retrying workers must produc
 one receipt and one financial effect. Run with TEST_DATABASE_URL and
 `go test -race -count=1 -timeout=2m ./...`.
 
-Next: richer provider lifecycle
-and signed events; independent reconciliation; then authentication, authorization,
-isolated demo sessions, a frontend, and deployment. The low-level ledger write
-routes must be removed from the public product surface before launch.
+The [local dashboard](../README.md#run-the-personal-banking-dashboard) now
+uses these routes. The next planned deployment is a private AWS preview. A
+public demo needs server-side authorization, isolated visitor sessions, and
+private low-level ledger routes. Independent reconciliation and richer provider
+events are future work.
 
 ## Beneficiaries, history, and timelines
 
